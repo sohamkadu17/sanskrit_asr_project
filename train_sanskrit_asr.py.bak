@@ -1,0 +1,349 @@
+import os
+import re
+import json
+import torch
+import jiwer
+import numpy as np
+
+# Redirect ALL Hugging Face caches to D drive (prevents C drive from filling up)
+os.environ["HF_HOME"]              = "D:/hf_cache"
+os.environ["HF_DATASETS_CACHE"]    = "D:/hf_cache/datasets"
+os.environ["TRANSFORMERS_CACHE"]   = "D:/hf_cache/hub"
+os.environ["HUGGINGFACE_HUB_CACHE"]= "D:/hf_cache/hub"
+
+# Suppress Windows symlink warning in HuggingFace cache (cosmetic only, cache still works)
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
+from datasets import load_dataset, Audio, DatasetDict
+from transformers import (
+    Wav2Vec2Processor,
+    Wav2Vec2ForCTC,
+    Wav2Vec2CTCTokenizer,
+    Wav2Vec2FeatureExtractor,
+    TrainingArguments,
+    Trainer
+)
+
+from huggingface_hub import get_token
+from dataclasses import dataclass
+from typing import Union
+
+MODEL_NAME = "facebook/wav2vec2-large-xlsr-53"
+
+########################################
+# 1 LOAD DATASET
+########################################
+
+hf_token = get_token()
+
+if hf_token is None:
+    raise RuntimeError(
+        "No Hugging Face token found.\n"
+        "Run this command in your terminal and paste your token:\n\n"
+        "    huggingface-cli login\n\n"
+        "Get your token at: https://huggingface.co/settings/tokens"
+    )
+
+dataset = load_dataset(
+    "ai4bharat/Kathbath",
+    "sanskrit",
+    token=hf_token
+)
+
+if "validation" not in dataset:
+    split = dataset["train"].train_test_split(test_size=0.1, seed=42)
+
+    dataset = DatasetDict({
+        "train": split["train"],
+        "validation": split["test"]
+    })
+
+print("Train size:", len(dataset["train"]))
+print("Validation size:", len(dataset["validation"]))
+
+########################################
+# 2 AUDIO PROCESSING
+########################################
+
+dataset = dataset.rename_column("audio_filepath", "audio")
+
+dataset = dataset.cast_column(
+    "audio",
+    Audio(sampling_rate=16000)
+)
+
+########################################
+# 3 TEXT NORMALIZATION
+########################################
+
+def normalize(text):
+
+    text = re.sub(r"[^\u0900-\u097F ]", "", text)
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
+
+########################################
+# 4 BUILD VOCABULARY
+########################################
+
+all_chars = set()
+for text in dataset["train"]["text"] + dataset["validation"]["text"]:
+    all_chars.update(normalize(text))
+
+# Ensure space is present so word delimiter mapping doesn't KeyError
+all_chars.add(" ")
+
+vocab_list = sorted(all_chars)
+
+vocab_dict = {v: k for k, v in enumerate(vocab_list)}
+
+vocab_dict["|"] = vocab_dict[" "]
+del vocab_dict[" "]
+
+vocab_dict["[UNK]"] = len(vocab_dict)
+vocab_dict["[PAD]"] = len(vocab_dict)
+
+with open("vocab.json", "w") as f:
+    json.dump(vocab_dict, f)
+
+########################################
+# 5 PROCESSOR
+########################################
+
+tokenizer = Wav2Vec2CTCTokenizer(
+    "vocab.json",
+    unk_token="[UNK]",
+    pad_token="[PAD]",
+    word_delimiter_token="|"
+)
+
+feature_extractor = Wav2Vec2FeatureExtractor(
+    feature_size=1,
+    sampling_rate=16000,
+    padding_value=0.0,
+    do_normalize=True,
+    return_attention_mask=True
+)
+
+processor = Wav2Vec2Processor(
+    feature_extractor=feature_extractor,
+    tokenizer=tokenizer
+)
+
+########################################
+# 6 PREPARE DATA
+########################################
+
+def prepare_dataset(batch):
+
+    audio_arrays = [a["array"] for a in batch["audio"]]
+
+    inputs = processor(
+        audio_arrays,
+        sampling_rate=16000,
+        return_tensors=None,
+        padding="do_not_pad"
+    )
+    batch["input_values"] = inputs.input_values
+
+    batch["labels"] = processor(
+        text=[normalize(t) for t in batch["text"]],
+        return_tensors=None
+    ).input_ids
+
+    return batch
+
+train_columns = dataset["train"].column_names
+dataset = dataset.map(
+    prepare_dataset,
+    batched=True,
+    batch_size=8,
+    remove_columns=train_columns,
+    load_from_cache_file=True
+)
+
+########################################
+# 7 MODEL
+########################################
+
+model = Wav2Vec2ForCTC.from_pretrained(
+
+    MODEL_NAME,
+
+    vocab_size=len(processor.tokenizer),
+
+    pad_token_id=processor.tokenizer.pad_token_id,
+
+    ctc_loss_reduction="mean",
+
+    ignore_mismatched_sizes=True
+)
+
+# SpecAugment
+model.config.apply_spec_augment = True
+model.config.mask_time_prob = 0.05
+model.config.mask_time_length = 10
+
+# Regularization
+model.config.layerdrop = 0.05
+
+# Stability
+model.config.ctc_zero_infinity = True
+
+# Required when gradient_checkpointing=True to avoid cache conflict
+model.config.use_cache = False
+
+# Freeze CNN feature encoder — only fine-tune transformer layers
+# This saves memory and stabilizes training on small datasets
+model.freeze_feature_encoder()
+
+########################################
+# 8 DATA COLLATOR
+########################################
+
+@dataclass
+class DataCollatorCTCWithPadding:
+
+    processor: Wav2Vec2Processor
+    padding: Union[bool, str] = True
+
+    def __call__(self, features):
+
+        input_features = [
+            {"input_values": f["input_values"]}
+            for f in features
+        ]
+
+        label_features = [
+            {"input_ids": f["labels"]}
+            for f in features
+        ]
+
+        batch = self.processor.pad(
+            input_features,
+            padding=self.padding,
+            return_tensors="pt"
+        )
+
+        labels_batch = self.processor.tokenizer.pad(
+            label_features,
+            padding=self.padding,
+            return_tensors="pt"
+        )
+
+        labels = labels_batch["input_ids"].masked_fill(
+            labels_batch.attention_mask.ne(1),
+            -100
+        )
+
+        batch["labels"] = labels
+
+        return batch
+
+data_collator = DataCollatorCTCWithPadding(processor)
+
+########################################
+# 9 METRICS
+########################################
+
+def compute_metrics(pred):
+
+    pred_ids = np.argmax(pred.predictions, axis=-1)
+
+    pred_str = processor.batch_decode(pred_ids)
+
+    label_ids = pred.label_ids
+
+    label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
+
+    label_str = processor.batch_decode(
+        label_ids,
+        group_tokens=False
+    )
+
+    wer = jiwer.wer(label_str, pred_str)
+
+    return {"wer": wer}
+
+########################################
+# 10 TRAINING CONFIG
+########################################
+
+training_args = TrainingArguments(
+
+    output_dir="D:/sanskrit_asr_project/sanskrit_asr",
+
+    per_device_train_batch_size=2,
+    gradient_accumulation_steps=4,   # keep effective batch = 8
+
+    eval_strategy="steps",
+
+    # max_steps overrides num_train_epochs AND overrides max_steps restored
+    # from trainer_state.json when resuming a checkpoint.
+    # 3 epochs × ceil(24156/8) steps/epoch = 9060 total steps.
+    max_steps=9060,
+
+    learning_rate=3e-4,
+
+    warmup_steps=1000,
+
+    lr_scheduler_type="cosine",
+
+    fp16=True,
+
+    gradient_checkpointing=True,
+
+    max_grad_norm=1.0,
+
+    logging_steps=100,
+
+    save_steps=500,
+
+    eval_steps=5000,
+
+    save_total_limit=2,
+
+    dataloader_num_workers=2,
+
+    report_to="none"
+)
+
+########################################
+# 11 TRAINER
+########################################
+
+trainer = Trainer(
+
+    model=model,
+
+    args=training_args,
+
+    train_dataset=dataset["train"],
+
+    eval_dataset=dataset["validation"].select(range(200)),
+
+    processing_class=processor,
+
+    data_collator=data_collator,
+
+    compute_metrics=compute_metrics
+)
+
+########################################
+# START TRAINING
+########################################
+
+import glob
+checkpoints = glob.glob("D:/sanskrit_asr_project/sanskrit_asr/checkpoint-*")
+resume_from = max(checkpoints, key=os.path.getmtime) if checkpoints else None
+
+trainer.train(resume_from_checkpoint=resume_from)
+
+########################################
+# SAVE MODEL
+########################################
+
+model.save_pretrained("D:/sanskrit_asr_project/sanskrit_asr_model")
+
+processor.save_pretrained("D:/sanskrit_asr_project/sanskrit_asr_model")

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sanskrit ASR</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Yantramanav:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="background-orbs">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+    </div>
+
+    <div class="container glass-panel">
+        <header>
+            <div class="logo">ॐ</div>
+            <h1>Sanskrit Speech Recognition</h1>
+            <p>Select a Shloka to practice your pronunciation, or let the AI auto-identify it!</p>
+        </header>
+
+        <main>
+            <div class="mode-selector" style="margin-bottom: 30px; text-align: center;">
+                <label for="shloka-select" style="color: var(--text-muted); font-size: 1.1rem; margin-right: 10px;">Select Mode:</label>
+                <select id="shloka-select" style="padding: 10px 15px; border-radius: 8px; background: rgba(0,0,0,0.5); color: #fff; border: 1px solid var(--glass-border); font-size: 1rem; outline: none; cursor: pointer;">
+                    <option value="auto">✨ Auto-Identify Shloka</option>
+                    <optgroup label="Practice Specific Shloka" id="practice-group">
+                        <!-- Populated via JS -->
+                    </optgroup>
+                </select>
+                
+                <div id="practice-target" class="hidden" style="margin-top: 20px; background: rgba(0,0,0,0.2); border-radius: 12px; padding: 15px; border: 1px dashed rgba(255,255,255,0.2);">
+                    <h4 style="color: #4cd137; margin-bottom: 10px;"><i class="fas fa-book-open"></i> Today's Practice:</h4>
+                    <p id="practice-sanskrit" style="font-family: 'Yantramanav', sans-serif; font-size: 1.6rem; line-height: 1.4; color: #fff;"></p>
+                </div>
+            </div>
+
+            <div class="input-section">
+                <!-- Record Button Area -->
+                <div class="record-container">
+                    <button id="record-btn" class="record-btn">
+                        <i class="fas fa-microphone"></i>
+                    </button>
+                    <div id="record-waves" class="waves hidden">
+                        <div class="wave"></div>
+                        <div class="wave"></div>
+                        <div class="wave"></div>
+                    </div>
+                    <p id="record-status">Click to Record</p>
+                </div>
+
+                <div class="divider">
+                    <span>OR</span>
+                </div>
+
+                <!-- File Upload Area -->
+                <div class="upload-container" id="drop-zone">
+                    <i class="fas fa-cloud-upload-alt"></i>
+                    <p>Drag & drop audio file here<br><span>or click to browse</span></p>
+                    <input type="file" id="file-input" accept="audio/*" hidden>
+                </div>
+            </div>
+
+            <!-- Loader -->
+            <div id="loader" class="loader-container hidden">
+                <div class="spinner"></div>
+                <p>Transcribing Audio...</p>
+            </div>
+
+            <!-- Output Area -->
+            <div class="output-section glass-panel-inner">
+                <h2>Transcription Output</h2>
+                <div id="transcription-box" class="transcription-box">
+                    <p class="placeholder-text">Your Sanskrit text will appear here.</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
