@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+.venv/
+venv/
+.env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model artifacts and checkpoints
+sanskrit_asr/
+sanskrit_asr_model/
+*.safetensors
+*.pt
+*.pth
+*.bin
+*.ckpt
+
+# Indices and large data files
+*.faiss
+*.arpa
+*.jsonl
+
+# Audio/video files
+*.wav
+*.mp3
+*.mp4
+*.webm
+*.m4a
+*.flac
+
+# Logs/outputs
+*.log
+train_output.txt
